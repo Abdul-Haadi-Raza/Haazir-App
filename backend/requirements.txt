@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+gunicorn
+pydantic
+firebase-admin
+google-genai
+python-dotenv
+googlemaps
