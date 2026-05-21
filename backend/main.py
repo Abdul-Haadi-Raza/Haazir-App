@@ -8,6 +8,7 @@ from agents.matchmaker_agent import MatchmakerAgent
 from agents.booker_agent import BookerAgent
 from agents.followup_agent import FollowUpAgent
 import os
+import json  # Added this at the top
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -23,14 +24,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- FIREBASE INITIALIZATION FIX ---
 try:
-    cred = credentials.Certificate("serviceAccountKey.json")
-    firebase_admin.initialize_app(cred)
-    db = firestore.client()
-    print("Firebase initialized successfully.")
+    firebase_credentials = os.getenv("GOOGLE_CREDENTIALS_JSON")
+
+    if firebase_credentials:
+        # PRODUCTION MODE: Running on Render using Environment Variables
+        cred_dict = json.loads(firebase_credentials)
+        cred = credentials.Certificate(cred_dict)
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        print("Firebase initialized successfully from Render Environment Variable.")
+
+    else:
+        # DEVELOPMENT MODE: Running on local laptop using JSON file
+        print("WARNING: GOOGLE_CREDENTIALS_JSON not found. Trying local serviceAccountKey.json.")
+        cred = credentials.Certificate("serviceAccountKey.json")
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        print("Firebase initialized successfully from local file.")
+
 except Exception as e:
-    print(f"Firebase initialization failed: {e}")
+    print(f"CRITICAL ERROR: Firebase initialization failed: {e}")
     db = None
+# -----------------------------------
 
 class ChatRequest(BaseModel):
     message: str
@@ -49,7 +68,6 @@ def read_root():
 @app.post("/diagnose")
 def process_diagnosis(request: DiagnoseRequest):
     try:
-        import json
         transcription = request.transcription
         base_fare = request.base_fare
         service_type = request.service_type.lower()
@@ -60,9 +78,9 @@ def process_diagnosis(request: DiagnoseRequest):
         fallback_parts = []
         fallback_parts_cost = 0
         fallback_labor = 300
-        
+
         lower_trans = transcription.lower()
-        
+
         # Rule matches for plumbing
         if "leak" in lower_trans or "pipe" in lower_trans or "toti" in lower_trans or "sink" in lower_trans:
             fallback_severity = 3
@@ -96,9 +114,9 @@ def process_diagnosis(request: DiagnoseRequest):
             fallback_parts = ["Standard 3-Pin Socket", "Switch Button"]
             fallback_parts_cost = 450
             fallback_labor = 400
-        
+
         fallback_updated_fare = base_fare + fallback_parts_cost + fallback_labor
-        
+
         fallback_res = {
             "status": "success",
             "severity": fallback_severity,
@@ -118,24 +136,24 @@ def process_diagnosis(request: DiagnoseRequest):
 
         from google import genai
         from google.genai import types
-        
+
         client = genai.Client(api_key=gemini_api_key)
-        
+
         system_prompt = f"""
         You are an expert AI Job Diagnosis System for the "Haazir" platform in Pakistan.
         Analyze the speech transcription from the service provider (could be in English, Urdu script, or Roman Urdu).
-        
+
         Category: {service_type}
         Original Base Fare: {base_fare} PKR
-        
+
         Evaluate:
         1. Severity of repair: 1 to 5.
         2. Recommended parts list (PKR estimate). Keep parts prices realistic for Pakistan market.
         3. Extra labor charge based on category/severity.
         4. Total updated fare (base_fare + parts_cost + extra_labor).
-        
+
         Input transcription: "{transcription}"
-        
+
         Return ONLY valid JSON matching this schema:
         {{
             "severity": int,
@@ -157,7 +175,7 @@ def process_diagnosis(request: DiagnoseRequest):
                     response_mime_type="application/json",
                 )
             )
-            
+
             clean_json = response.text.replace("```json", "").replace("```", "").strip()
             result = json.loads(clean_json)
             result["status"] = "success"
@@ -200,7 +218,7 @@ def process_chat(request: ChatRequest):
 
         conv_agent = ConversationalAgent()
         conv_result = conv_agent.process_request(text_message, saved_addresses=saved_addresses)
-        
+
         if not conv_result.get("is_complete"):
             print("DEBUG: Request incomplete, asking for clarification.")
             return {
@@ -218,7 +236,7 @@ def process_chat(request: ChatRequest):
 
         matchmaker = MatchmakerAgent()
         match_result = matchmaker.find_best_provider(user_location=location, service_category=service, severity=severity)
-        
+
         if match_result["status"] != "success":
             print(f"DEBUG: Matchmaker failed: {match_result.get('message')}")
             return {
@@ -255,7 +273,7 @@ def process_chat(request: ChatRequest):
 
         followup_agent = FollowUpAgent()
         followup_result = followup_agent.schedule_followup(booking_data)
-        
+
         print("DEBUG: Pipeline complete. Sending response.")
         reply_text = f"Done! I have booked {best_provider['name']} ({best_provider['distance_text']} away). Estimated Cost: {best_provider.get('estimated_price')}. They will arrive at {extracted.get('time')}."
         if match_result.get("is_external"):
